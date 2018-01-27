@@ -1,0 +1,298 @@
+---
+title: "PABLO GARCIA DATA SCIENCE PORTFOLIO"
+output:
+  html_notebook: default
+  pdf_document: default
+---
+## Gabrica - Data Analysis, Visualisation, Dimension reduction and Cluster Analysis
+This project was part of a customer experience consultancy made by GRUPO LAERA. The consultancy determined how GABRICA S.A.S must handle their customers based on the customer's type, customer relationship and customer spending amounts. Part of the outcomes was a cluster analysis to establish an efficient approach to the customers.
+GABRICA S.A.S is a Colombian firm which distributes standard pet food, medical pet food, pet medication, pet accesories among others types of products. Their customers are divided in pet shops, clinics, website stores and common stores.
+
+### Introduction
+
+In this project, first I analized the data which include customers spendings, products lines, products portfolios and if the product bought by the customers was a VIP or standard category product. Second, I did some feature engineering and data cleansing in order to define a better dataset to the future statistical analysis. Finally I did a PCA analysis trying to reduce dimensions of the research, and a cluster analysis to compare with current segmentation and determine future steps in the consultancy.
+The process to began with the gathering of the data based on financial, commercial and logistics management reports. Then after some data arrangements, the data was import to R to perform the whole anaysis.
+
+The data was separated in three sets:
+
+  * Amount Sales (monetary)
+  - Amount Sales (inventory)
+  - Demographics and segmentation
+```{r}
+#import libraries
+library(ggplot2)
+library(gridExtra)
+library(grid)
+library(dplyr)
+library(factoextra)
+library(mclust)
+library(cluster)
+
+#load the three datasets
+Customers_sales <- read.csv("resumen.csv", header = TRUE)
+info_customers <- read.csv("info_Clientes.csv", header = TRUE)
+Portfolio_vip_standar <- read.csv("inventario.csv", header = TRUE)
+```
+
+First I wanted to understand the structure of each dataset:
+```{r}
+#find the structure of the datasets
+glimpse(Customers_sales)
+glimpse(info_customers)
+glimpse(Portfolio_vip_standar)
+```
+
+```{r}
+#changing to character some numerical variables
+Customers_sales<-Customers_sales %>% mutate(Customer_ID=as.character(Customer_ID))
+Portfolio_vip_standar<-Portfolio_vip_standar %>% mutate(Row.Labels=as.character(Row.Labels))
+info_customers<-info_customers %>% mutate(Customer_ID=as.character(Customer_ID))
+```
+```{r}
+# Change the name of 'Row Labels' variable to easy understand the data
+Portfolio_vip_standar<-rename(Portfolio_vip_standar, Customer_id=Row.Labels)
+glimpse(Portfolio_vip_standar)
+```
+Before joining the tables, a little clarification of the data:
+* Customer_sales is the total value spent in a particular category of products during three months.
+* info_customers has the current segmentation Gabrica uses to classify their customers, and the location of the customer. Their current customers groups is based on commercial relationship and customer influence in the market.
+* Portfolio_vip_standar is the total amount of products each customer bought during the three months of analysis. Additionally, the goods are divived in two categories: type of good and type of portfolio. The sum of 'General' and 'VIP' (type of good) is the same as the sum of 'Dorado', 'Equino', 'Estelar', 'Platino' for each customer.
+
+Unfortunately, the data was not recent and in some cases without consistency. So I had to determine which historical values to use and how they related between them.
+```{r}
+# create an unified dataset
+customersData<-inner_join(Customers_sales,Portfolio_vip_standar, by=c("Customer_ID"="Customer_id"))
+customersData<-inner_join(customersData, info_customers, by=c("Customer_ID"="Customer_ID"))
+glimpse(customersData)
+```
+
+Finally, with the final dataset defined, it was evident the loss of data based on the reasons explain before. Nevertheless, it was enough to made a good data analysis and evalute good conclusions.
+### Data Analysis
+Initially, I decided to look the monetary variables since the majority of the issues found throughout the consultancy was about relationship and delivery of the goods.
+```{r}
+summary(customersData)
+```
+Comparing the median and mean values in each feature I noticed that all of them presents outliers since the mean is higher in all cases. In addition, probably it would be a good idea to reduce the number of features in our analysis. Another point to mention was the NAs values, all of them represent 0 items purchase during the period of the data.
+```{r}
+customersData<-customersData %>% replace(is.na(.),0)
+```
+
+Taking a look to the 'based_segment' feature, it is important to notice that there are repeated values with slightly differences in the grammar and caps letters, for example 'Aliado' and 'ALIADO', and 'PLAN DE NEGOCIO' and 'PLAN_NEGOCIO'. Additionally, I found that the employees were took into account in the customers database ('EMPLEADO'). Since the employees are not part of my analysis I decidet to remove those registers from the data. Inactive customers ('INACTIVOS') and 'HN' were excluded too.
+```{r}
+summary(customersData$based_segment)
+```
+```{r}
+customersData<-filter(customersData,!based_segment=="EMPLEADO")
+customersData<-filter(customersData,!based_segment=="HN")
+customersData<-filter(customersData,!based_segment=="INACTIVOS")
+customersData[which(customersData$based_segment=="Aliado"),"based_segment"]<-"ALIADO"
+customersData[which(customersData$based_segment=="PLAN DE NEGOCIO"),"based_segment"]<-"PLAN_NEGOCIO"
+customersData[which(customersData$based_segment=="PLAN DE NEGOCIO "),"based_segment"]<-"PLAN_NEGOCIO"
+summary(customersData$based_segment)
+```
+The whole analysis was focus on 'ALIADO', 'PLAN_NEGOCIO' and 'Estándar' based_segment values.
+
+From our initial summary view we noticed that all of the variables present outliers. With some visualisation it was clear that the variables distribution was not normal and highly skewd.
+```{r eval=FALSE, include=FALSE}
+customersData<-customersData %>% replace(is.na(.),0) %>%
+  mutate(total_spend=rowSums(.[3:50]))
+head(customersData$total_spend)
+```
+
+```{r eval=FALSE, include=FALSE}
+totalCustomers<-customersData %>% summarise(sum(total_spend))
+cols<-c("Customer_ID", "total_spend")
+customersSpending<-customersData %>% select(one_of(cols)) %>% arrange(desc(total_spend)) %>% 
+  mutate(propSpend=total_spend/as.double(totalCustomers)) %>% mutate(accum=cumsum(propSpend))
+
+```
+
+```{r}
+p1<-ggplot(customersData, mapping = aes(x=customersData$Food.Dog)) +
+  geom_histogram() + xlab("Regular Dog Food")
+p2<-ggplot(customersData, mapping = aes(x=customersData$Food.Cat)) +
+  geom_histogram() + xlab("Regular Cat Food")
+p3<-ggplot(customersData, mapping = aes(x=customersData$Medical.treatment.Dog)) +
+  geom_histogram() + xlab("Medical Treatment Food")
+p4<-ggplot(customersData, mapping = aes(x=customersData$Snacks)) +
+  geom_histogram() + xlab("Snacks")
+p5<-ggplot(customersData, mapping = aes(x=customersData$Medical)) +
+  geom_histogram() + xlab("Medications")
+grid.arrange(p1,p2,p3,p4,p5,ncol=3, top="Variable Distribution")
+```
+Based on the charts I decided to use a natural logarithm transformation to reduce the skewness. Since the data contained 0 value registers, I used log1p to manage this issue.
+
+```{r}
+lp1<-ggplot(customersData, mapping = aes(x=log1p(customersData$Food.Dog))) +
+  geom_histogram() + xlab("Regular Dog Food")
+lp2<-ggplot(customersData, mapping = aes(x=log1p(customersData$Food.Cat))) +
+  geom_histogram() + xlab("Regular Cat Food")
+lp3<-ggplot(customersData, mapping = aes(x=log1p(customersData$Medical.treatment.Dog))) +
+  geom_histogram() + xlab("Medical treatment Food")
+lp4<-ggplot(customersData, mapping = aes(x=log1p(customersData$Snacks))) +
+  geom_histogram() + xlab("Snacks")
+lp5<-ggplot(customersData, mapping = aes(x=log1p(customersData$Medical))) +
+  geom_histogram() + xlab("Medication")
+grid.arrange(lp1,lp2,lp3,lp4,lp5,ncol=3, top="Logarithm transformation")
+```
+Jumping to the other variables: VIP, GENERAL, PLATINO, DORADO, EQUINO, ESTELAR. The VIP and GENERAL variables reffer to the numbers of items for each category, PLATINO, DORADO, EQUINO and ESTELAR reffer to the product portfolio. These variables are important to take into account since the commercial agents are divided based on the type of category and portfolio.
+```{r}
+cp1<-ggplot(customersData, mapping = aes(x=GENERAL)) +
+  geom_histogram() + xlab("GENERAL CATEGORY")
+cp2<-ggplot(customersData, mapping = aes(x=VIP)) +
+  geom_histogram() + xlab("VIP CATEGORY")
+cp3<-ggplot(customersData, mapping = aes(x=DORADO)) +
+  geom_histogram() + xlab("DORADO PORTFOLIO")
+cp4<-ggplot(customersData, mapping = aes(x=EQUINO)) +
+  geom_histogram() + xlab("EQUINO PORTFOLIO")
+cp5<-ggplot(customersData, mapping = aes(x=ESTELAR)) +
+  geom_histogram() + xlab("ESTELAR PORTFOLIO")
+cp6<-ggplot(customersData, mapping = aes(x=PLATINO)) +
+  geom_histogram() + xlab("PLATINO PORTFOLIO")
+grid.arrange(cp1,cp2,cp3,cp4,cp5,cp6, ncol=3, top="Inventory variables")
+```
+I decided to find the proportion of the VIP variable based on the total amount of items, GENERAL+VIP. Similarly, I followed the same approach to the portfalio variables:
+```{r}
+customersData<-customersData %>% mutate(VIP.PP=VIP/(VIP+GENERAL), 
+                                        DORADO.PP=DORADO/(DORADO+EQUINO+ESTELAR+PLATINO),
+                                        EQUINO.PP=EQUINO/(DORADO+EQUINO+ESTELAR+PLATINO),
+                                        ESTELAR.PP=ESTELAR/(DORADO+EQUINO+ESTELAR+PLATINO),
+                                        PLATINO.PP=PLATINO/(DORADO+EQUINO+ESTELAR+PLATINO)) %>%
+  select(one_of(c("VIP.PP", "DORADO.PP", "EQUINO.PP", "ESTELAR.PP", "PLATINO.PP"))) %>% print(10)
+```
+To finish the dataset preprocessing, I cleared some variables and did the logarithm transformation.
+```{r}
+customersDataTrans<-customersData
+customersDataTrans$Customer_ID<-NULL
+customersDataTrans$GENERAL<-NULL
+customersDataTrans$VIP<-NULL
+customersDataTrans$DORADO<-NULL
+customersDataTrans$EQUINO<-NULL
+customersDataTrans$ESTELAR<-NULL
+customersDataTrans$PLATINO<-NULL
+customersDataTrans[,1:5]<-log1p(customersDataTrans[,1:5])
+glimpse(customersDataTrans)
+```
+### PCA STUDY
+Based on interviews made during the consultancy, customers differs their mix of product based on the type of customer, for example a veterinary clinic tends to buy more medical treatment items than day to day food; on the other hand pet shops tend to buy day to day items rather than medical ones.
+Doing a PCA study I complemented these business insights with the data.
+```{r}
+pca.data<-customersDataTrans[,1:5]
+pca.var<-prcomp(pca.data, scale. = T)
+
+fviz_pca_ind(pca.var,
+             col.ind = "cos2", # Color by the quality of representation
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE,     # Avoid text overlapping
+             geom = c("point"),
+             axes = c(1,2)
+             )
+fviz_pca_var(pca.var,
+             col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE,     # Avoid text overlapping
+             axes = c(1,2)
+             )
+
+fviz_pca_biplot(pca.var, repel = TRUE,
+                col.var = "#2E9FDF", # Variables color
+                col.ind = "#696969",  # Individuals color
+                geom = c("point")
+                )
+```
+
+```{r}
+#code to define how many components to use.
+pca.var_stdDev<-pca.var$sdev
+pca.var_var<-pca.var_stdDev^2
+pca.var_explain<-pca.var_var/sum(pca.var_var)
+#pca.var_explain
+plot(pca.var_explain,type = "b")
+```
+In this case the variance explained by the principal components was not enough to reduce the dimensions of the problem, using the first four components the variance explained is less than 90%. Nevertheless, PCA corroborates the business hypothesis explaining the tendancy of customers to buy medical items or regular ones as the vector's direction shows in the chart above.
+### CLUSTER ANALYSIS
+To finish our analysis, we want to perform a cluster analysis and see how the data group the customers.
+I decided to follow two clusters approach, namely Hierarchical clustering and Kmeans. Initially I decided to have three clusters since the company segmentation is based on three groups as well.
+```{r}
+glimpse(customersDataTrans)
+clusterData<-customersDataTrans %>% select(-one_of(c("based_segment", "region")))
+glimpse(clusterData)
+
+#Hierarchical cluster
+distMX<-dist(clusterData,method = "euclidean")
+#dendogram
+ddg<-hclust(distMX)
+plot(ddg, hang = -1)
+#defining number of k
+Hclusters<-cutree(ddg,k=3) #3 clusters
+rect.hclust(ddg,k=3)
+
+#K means cluster
+Kclusters<-kmeans(clusterData,centers = 3, nstart = 20)
+Kclusters
+
+table(Hclusters, Kclusters$cluster)
+```
+I continued the analysis with the Kmeans cluster results since I considered a better grouping based on the results. It is important to mention that the clusters were to close and overlapping in some cases, making it difficult to separate them clearly.
+```{r}
+kp1<-ggplot(customersDataTrans, aes(x=customersDataTrans$Food.Dog, 
+                         y=customersDataTrans$Food.Cat, colour=Kclusters$cluster)) +
+  geom_point()
+kp2<-ggplot(customersDataTrans, 
+            mapping = aes(x=customersDataTrans$Food.Dog, y=customersDataTrans$Medical.treatment.Dog,color=Kclusters$cluster )) +
+  geom_point()
+kp3<-ggplot(customersDataTrans, 
+            mapping = aes(x=customersDataTrans$Food.Dog, y=customersDataTrans$Snacks, color=Kclusters$cluster)) +
+  geom_point()
+kp4<-ggplot(customersDataTrans, 
+            mapping = aes(x=Food.Dog, y=customersDataTrans$Medical, color=Kclusters$cluster)) +
+  geom_point()
+kp5<-ggplot(customersDataTrans, 
+            mapping = aes(x=customersDataTrans$Food.Dog, y=customersDataTrans$VIP.PP, color=Kclusters$cluster)) +
+  geom_point()
+kp6<-ggplot(customersDataTrans, 
+            mapping = aes(x=customersDataTrans$Medical.treatment.Dog, y=customersDataTrans$PLATINO.PP, color=Kclusters$cluster)) +
+  geom_point()
+kp7<-ggplot(customersDataTrans, 
+            mapping = aes(x=customersDataTrans$Medical, y=customersDataTrans$ESTELAR.PP, color=Kclusters$cluster)) +
+  geom_point()
+kp8<-ggplot(customersDataTrans, 
+            mapping = aes(x=customersDataTrans$Food.Cat, y=customersDataTrans$DORADO.PP, color=Kclusters$cluster)) +
+  geom_point()
+kp1
+kp2
+kp3
+kp4
+kp5
+kp6
+kp7
+kp8
+#grid.arrange(kp1, kp2, kp3,kp4, kp5, kp6, kp7, kp8, ncol=2, top="Clusters distribution")
+```
+### CONCLUSIONS
+Since the consultancy was to determine a new relationship experience offer to customers, it was very important to clarify the difference between the current segmentation and the new propose one and why it was a better approach to accomplish the new strategic goals set by the company fo the future 5 years.
+```{r}
+#Differences between clusters and segmentation
+table(Kclusters$cluster,customersData$based_segment)
+```
+The proposed customer experience strategy was based on this analysis changing key logistics processes, customer service, customer retention strategy, marketing campaign targets and social media content.
+
+### METHODOLOGY AND LEARNING PROCESS
+One of the major challenges was the data gathering process and create a good dataset that can help us understand the whole business, and able to propose an excelent customer experience strategy.
+This was not my first cluster analysis made, however was one of the most difficult since the time frame was short, less than a month without much knowledge of the business. Previous cluster analysis were made with a more complete set of data and a complete understanding of the industry.
+During this analysis I had to learn Principal Component Analysis since it was my first time applying it to a business case. Initally there were more than 15 variables but mostly with missing values, so I chose to have variables that cover the majority of the costumers and gave good value to the analysis.
+Most of my learning methods is based on internet tutorials, blogs, academic researches and practicing by myself.
+I found very interesting PCA and I was a little frustrated that the results were different than expected, however, using it as a tool to support our analysis was very awarding. For future analysis I will like to apply additional methodologies and compare between them to select the better approach to the problems.
+This whole project is related to data exploration, data visualisation, dimension reduction and unsupervised learning.
+This entire data project was made by myself from may 2017 to jul 2017. I was Senior Data Consultant by the time.
+
+## REFERENCES
+For more information about this project you can contact:
+
+* VICENTE LACAMBRA
+* email: vicente@grupolaera.com
+* linkedIn profile: https://www.linkedin.com/in/vicente-lacambra-23595138/
+* https://www.linkedin.com/company/2381565/
+* http://grupolaera.com/en/
+
+
